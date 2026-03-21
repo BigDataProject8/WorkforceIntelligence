@@ -3,3 +3,9 @@ requests==2.32.5
 matplotlib==3.10.8
 numpy==2.4.3
 scipy==1.17.1
+scikit-learn
+imbalanced-learn
+xgboost
+shap
+pyarrow
+seaborn
