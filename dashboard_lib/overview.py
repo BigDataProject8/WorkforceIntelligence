@@ -4,7 +4,8 @@ Lands the user with:
   1. A *Headline findings* callout summarising the analysis in four bullets.
   2. KPI cards for the workforce.
   3. Attrition rate by department and job role (where should HR focus first?).
-  4. Classifier performance on the held-out test split.
+  4. Global feature importance — which attributes drive attrition overall.
+  5. Classifier performance on the held-out test split.
 """
 from __future__ import annotations
 
@@ -42,6 +43,9 @@ def render_overview(frames: dict, models: dict) -> None:
 
     st.divider()
     _render_segment_breakdowns(df)
+
+    st.divider()
+    _render_global_feature_importance(frames, models)
 
     st.divider()
     _render_classifier_metrics(frames, models)
@@ -134,6 +138,44 @@ def _render_segment_breakdowns(df: pd.DataFrame) -> None:
         fig.tight_layout()
         ax_col.pyplot(fig)
         plt.close(fig)
+
+
+def _render_global_feature_importance(frames: dict, models: dict) -> None:
+    """Global feature importance as mean-|SHAP| across the test set.
+
+    The per-employee Risk Explorer answers "why this person?"; this section
+    answers "what drives attrition *overall*?" by averaging absolute SHAP
+    values across everyone in the held-out test split. We pre-compute the
+    SHAP values at export time, so this panel is just a sort + plot.
+    """
+    st.subheader("What drives attrition overall?")
+    st.caption(
+        "Average of the absolute SHAP contribution per feature across the "
+        "test split. A feature at the top influenced the classifier the most, "
+        "regardless of which direction it pushed for each individual."
+    )
+
+    shap_test = models["shap_test"]
+    feature_names = frames["X_test"].columns.tolist()
+
+    # Mean absolute SHAP per feature — standard global-importance summary.
+    mean_abs = np.abs(shap_test).mean(axis=0)
+    importance = (
+        pd.DataFrame({"feature": feature_names, "importance": mean_abs})
+        .sort_values("importance", ascending=True)
+        .tail(15)
+    )
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.barh(importance["feature"], importance["importance"], color=PALETTE[4], alpha=0.85)
+    ax.set(
+        xlabel="Mean |SHAP value| (log-odds impact on attrition)",
+        title="Top 15 attrition drivers across the workforce",
+    )
+    ax.grid(axis="x", alpha=0.3)
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
 
 
 def _render_classifier_metrics(frames: dict, models: dict) -> None:

@@ -38,10 +38,10 @@ def render_risk_explorer(frames: dict, models: dict) -> None:
 
     # Sidebar filters scoped to this tab. Streamlit keeps them visible whenever
     # this tab is active and hides them when the user switches away.
-    tier_filter, sort_mode = _render_tab_filters()
+    filters = _render_tab_filters(df)
 
     # Build the selectable cohort given the current filters.
-    candidates = _filter_candidates(risk, tier_filter, sort_mode)
+    candidates = _filter_candidates(risk, df, filters)
     if candidates.empty:
         st.warning("No employees match the selected filters.")
         return
@@ -72,12 +72,26 @@ def render_risk_explorer(frames: dict, models: dict) -> None:
 # Sub-sections
 # ---------------------------------------------------------------------------
 
-def _render_tab_filters() -> tuple[list[str], str]:
+def _render_tab_filters(df: pd.DataFrame) -> dict:
     """Sidebar filters for the Risk Explorer.
 
-    Returned values drive the candidate list. Kept in the sidebar (not the
-    main area) to leave the centre column for the employee detail view.
+    Returns a dict of every filter's current value. Kept in the sidebar (not
+    the main area) to leave the centre column for the employee detail view.
+
+    Three additional filters beyond the basic tier selector keep the 1,470-row
+    employee dropdown navigable:
+      - Department (derived from one-hot columns)
+      - Overtime  (All / Yes / No)
+      - Tenure range (years at company)
     """
+    # Reconstruct department labels from the one-hot columns so the user can
+    # pick by display name rather than having to think in column prefixes.
+    dept_cols = [c for c in df.columns if c.startswith("Department_")]
+    dept_options = sorted(c.replace("Department_", "") for c in dept_cols)
+
+    tenure_min = int(df["YearsAtCompany"].min())
+    tenure_max = int(df["YearsAtCompany"].max())
+
     with st.sidebar:
         st.markdown("### Risk Explorer filters")
         tier_filter = st.multiselect(
@@ -85,23 +99,72 @@ def _render_tab_filters() -> tuple[list[str], str]:
             options=["High Risk", "Moderate Risk", "Low Risk"],
             default=["High Risk", "Moderate Risk", "Low Risk"],
         )
+        dept_filter = st.multiselect(
+            "Department",
+            options=dept_options,
+            default=dept_options,
+        )
+        overtime_filter = st.radio(
+            "Overtime",
+            options=["All", "Overtime only", "No overtime only"],
+            index=0,
+            horizontal=True,
+        )
+        tenure_range = st.slider(
+            "Years at company",
+            min_value=tenure_min,
+            max_value=tenure_max,
+            value=(tenure_min, tenure_max),
+        )
         sort_mode = st.selectbox(
             "Sort employees by",
             ["Predicted risk (desc)", "Predicted risk (asc)", "Row index"],
         )
-    return tier_filter, sort_mode
+    return {
+        "tiers": tier_filter,
+        "departments": dept_filter,
+        "overtime": overtime_filter,
+        "tenure_range": tenure_range,
+        "sort_mode": sort_mode,
+    }
 
 
 def _filter_candidates(
-    risk: pd.DataFrame, tier_filter: list[str], sort_mode: str
+    risk: pd.DataFrame, df: pd.DataFrame, filters: dict
 ) -> pd.DataFrame:
-    """Apply the tier filter and the chosen sort order to the risk frame."""
-    mask = risk["RiskTier"].isin(tier_filter)
+    """Apply tier + department + overtime + tenure filters, then sort."""
+    # Start with the tier filter on the risk frame.
+    mask = risk["RiskTier"].isin(filters["tiers"])
+
+    # Department is encoded one-hot in df; accept rows where any selected
+    # department column is 1.
+    if filters["departments"]:
+        dept_cols = [f"Department_{d}" for d in filters["departments"]]
+        dept_cols = [c for c in dept_cols if c in df.columns]
+        if dept_cols:
+            dept_mask = (df[dept_cols].sum(axis=1) > 0).reindex(risk.index, fill_value=False)
+            mask &= dept_mask
+    else:
+        # Empty dept list = "no departments selected" = show nothing.
+        mask &= pd.Series(False, index=risk.index)
+
+    # Overtime filter — radio so it's always one of three states.
+    if filters["overtime"] == "Overtime only":
+        mask &= df["OverTime"].reindex(risk.index) == 1
+    elif filters["overtime"] == "No overtime only":
+        mask &= df["OverTime"].reindex(risk.index) == 0
+
+    # Tenure range filter (inclusive on both ends).
+    lo, hi = filters["tenure_range"]
+    tenure = df["YearsAtCompany"].reindex(risk.index)
+    mask &= (tenure >= lo) & (tenure <= hi)
+
     candidates = risk.loc[mask].copy()
     # Preserve the original row index as an explicit column so we can read it
     # back out of the selectbox label later.
     candidates["row"] = candidates.index
 
+    sort_mode = filters["sort_mode"]
     if sort_mode == "Predicted risk (desc)":
         return candidates.sort_values("AttritionProb1Yr", ascending=False)
     if sort_mode == "Predicted risk (asc)":
