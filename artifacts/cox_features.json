@@ -1,0 +1,42 @@
+{
+  "fair": [
+    "OverTime",
+    "MonthlyIncome",
+    "DistanceFromHome",
+    "JobLevel",
+    "NumCompaniesWorked",
+    "YearsSinceLastPromotion",
+    "TotalWorkingYears",
+    "TrainingTimesLastYear",
+    "SatisfactionMean",
+    "SatisfactionMin",
+    "TenureCompanyRatio",
+    "PromotionLagRatio",
+    "AvgTenurePerCompany",
+    "WorkLifeBalance",
+    "JobInvolvement",
+    "PerformanceRating",
+    "StockOptionLevel"
+  ],
+  "full": [
+    "Age",
+    "Gender",
+    "OverTime",
+    "MonthlyIncome",
+    "DistanceFromHome",
+    "JobLevel",
+    "NumCompaniesWorked",
+    "YearsSinceLastPromotion",
+    "TotalWorkingYears",
+    "TrainingTimesLastYear",
+    "SatisfactionMean",
+    "SatisfactionMin",
+    "TenureCompanyRatio",
+    "PromotionLagRatio",
+    "AvgTenurePerCompany",
+    "WorkLifeBalance",
+    "JobInvolvement",
+    "PerformanceRating",
+    "StockOptionLevel"
+  ]
+}
