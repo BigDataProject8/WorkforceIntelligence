@@ -1,0 +1,50 @@
+# Files excluded from the Docker build context. Keeping this tight makes
+# `docker build` faster (smaller context to upload to the daemon) and
+# prevents accidental leakage of dev/secret files into the image.
+
+# Local virtualenv — tens of thousands of files we never want in the image.
+.venv/
+venv/
+env/
+
+# Git metadata.
+.git/
+.gitignore
+.gitattributes
+
+# Python bytecode and caches.
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Notebook checkpoints and the notebook itself — not needed at runtime, the
+# dashboard reads only the exported artifacts.
+.ipynb_checkpoints/
+*.ipynb
+
+# Raw / intermediate data — only the processed artifacts ship in the image.
+data/raw/
+
+# IDE and OS noise.
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Docker artefacts themselves.
+Dockerfile
+.dockerignore
+
+# Documentation that doesn't need to be inside the container.
+README.md
+DEMO_SCRIPT.md
+LICENSE
+
+# CI / test outputs.
+.coverage
+htmlcov/
+*.log
