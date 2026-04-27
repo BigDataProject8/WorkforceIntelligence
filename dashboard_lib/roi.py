@@ -47,6 +47,12 @@ def render_roi_calculator(frames: dict) -> None:
         "in annualised USD."
     )
 
+    # ---- Formula reference ---------------------------------------------
+    # Surfaces the maths the rest of the tab is computing. Tucked in an
+    # expander so it doesn't push the inputs below the fold for the common
+    # case where the user just wants to play with sliders.
+    _render_formula_reference()
+
     # ---- Inputs ---------------------------------------------------------
     cohort, effectiveness, cost_per_emp, replacement_mult = _render_inputs(risk)
 
@@ -125,6 +131,86 @@ def render_roi_calculator(frames: dict) -> None:
         "annual salary, varying by role seniority. Treat outputs as scenario "
         "planning, not forecast."
     )
+
+
+# ---------------------------------------------------------------------------
+# Formula reference
+# ---------------------------------------------------------------------------
+
+def _render_formula_reference() -> None:
+    """Collapsible explainer of the ROI formula.
+
+    Mirrors the docstring at the top of this module in user-facing form so
+    the dashboard is self-documenting — a stakeholder can see exactly how
+    each KPI is computed without opening the source. Closed by default to
+    keep the tab compact for the common "tweak the sliders" workflow.
+    """
+    with st.expander("How is ROI calculated? (formula)"):
+        st.markdown(
+            "For each employee $i$ in the selected cohort, with predicted "
+            "attrition probability $p_i$, annual salary $s_i$, replacement "
+            "multiplier $r$, intervention effectiveness $e$, per-employee "
+            "cost $c$, and cohort size $n$:"
+        )
+
+        # One LaTeX block per formula followed by a plain-English gloss.
+        # The interleaved format keeps each definition next to its formula
+        # so the reader doesn't have to map symbols to names mentally.
+        st.latex(r"\text{baseline\_cost} = \sum_{i=1}^{n} p_i \cdot s_i \cdot r")
+        st.markdown(
+            "**Baseline cost** — expected turnover loss if we **do nothing**. "
+            "Each employee's contribution is *(probability they leave) × "
+            "(their salary) × (replacement multiplier)*, summed across the cohort."
+        )
+
+        st.latex(r"\text{post\_cost} = \sum_{i=1}^{n} p_i \cdot (1 - e) \cdot s_i \cdot r")
+        st.markdown(
+            "**Post-intervention cost** — expected turnover loss **after** the "
+            "programme runs. Same calculation as baseline, but every employee's "
+            "attrition probability is reduced by the effectiveness factor $e$."
+        )
+
+        st.latex(r"\text{intervention\_cost} = n \cdot c")
+        st.markdown(
+            "**Intervention cost** — total programme spend. Flat across the "
+            "cohort: number of employees targeted × cost per employee."
+        )
+
+        st.latex(
+            r"\text{gross\_savings} = \text{baseline\_cost} - \text{post\_cost} "
+            r"= e \cdot \sum_{i=1}^{n} p_i \cdot s_i \cdot r"
+        )
+        st.markdown(
+            "**Gross savings** — turnover dollars **averted** by the programme, "
+            "before paying for it. Equivalent to saying \"effectiveness × "
+            "baseline cost\" — the share of expected losses prevented."
+        )
+
+        st.latex(r"\text{net\_savings} = \text{gross\_savings} - \text{intervention\_cost}")
+        st.markdown(
+            "**Net savings** — what's left after the programme pays for itself. "
+            "Positive means the intervention generated more value than it cost; "
+            "negative means it didn't."
+        )
+
+        st.latex(
+            r"\text{ROI \%} = \frac{\text{net\_savings}}{\text{intervention\_cost}} "
+            r"\times 100"
+        )
+        st.markdown(
+            "**ROI %** — return per dollar spent, expressed as a percentage. "
+            "An ROI of *+200%* means every $1 of programme spend returned $2 in "
+            "averted turnover cost on top of paying itself back. *0%* is the "
+            "break-even line."
+        )
+
+        st.markdown(
+            "Replacement cost $r$ scales each loss by an industry-typical "
+            "multiple of annual salary (0.5×–2.0×) to capture recruitment, "
+            "onboarding, and productivity ramp-up. Effectiveness $e$ is the "
+            "biggest judgement call — the *Sensitivity* chart below sweeps it "
+            "across 0–80% so you can see how much the conclusion depends on it."
+        )
 
 
 # ---------------------------------------------------------------------------
