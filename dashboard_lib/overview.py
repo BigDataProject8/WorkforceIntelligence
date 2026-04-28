@@ -22,6 +22,7 @@ from sklearn.metrics import (
 )
 
 from .config import PALETTE
+from .ui import tier_threshold_rows
 
 
 def render_overview(frames: dict, models: dict) -> None:
@@ -30,16 +31,21 @@ def render_overview(frames: dict, models: dict) -> None:
     risk = frames["risk"]
 
     st.markdown(
-        "This tab gives a top-down view of the workforce and the model's "
-        "behaviour. Start here to understand *who* is leaving, *where* they "
-        "cluster, and *how well* our classifier distinguishes leavers from "
-        "stayers before diving into individual cases."
+        "This tab gives a top-down view of the workforce and the two models "
+        "we run on it. Start here to understand *who* is leaving, *where* "
+        "they cluster, and *how well* the LASSO classifier distinguishes "
+        "leavers from stayers. The risk tiers shown throughout the dashboard "
+        "are produced by a separate **fair Cox** survival model — see the "
+        "tier-definition table below."
     )
 
     _render_headline_findings()
 
     st.divider()
     _render_kpis(df, risk)
+
+    st.divider()
+    _render_risk_tier_legend(risk)
 
     st.divider()
     _render_segment_breakdowns(df)
@@ -64,18 +70,24 @@ def _render_headline_findings() -> None:
     """
     st.info(
         "**Headline findings**\n\n"
-        "1. **Overtime is the #1 modifiable driver.** Employees working overtime "
-        "show significantly shorter tenure in the Kaplan-Meier curves and elevated "
-        "Cox hazard ratios. It's the single highest-ROI lever HR can pull.\n\n"
-        "2. **The first two years are the danger zone.** Both the KM curves and "
-        "at-risk tables show the steepest drop in retention in years 1–2, so "
-        "onboarding and early-career investment has the highest marginal value.\n\n"
-        "3. **Satisfaction is the strongest protective factor.** Employees with a "
-        "composite satisfaction score above the midpoint show materially higher "
-        "retention than those below.\n\n"
-        "4. **The fair model loses almost no accuracy.** Removing gender and age "
-        "as Cox inputs barely moves the C-index — we recommend deploying the fair "
-        "model as the default."
+        "1. **Pay and overtime are the two biggest modifiable drivers.** "
+        "Under the LASSO classifier, **MonthlyIncome (log)** tops the SHAP "
+        "global importance ranking — low pay carries the largest "
+        "attribution toward attrition — with raw MonthlyIncome and OverTime "
+        "right behind it. Overtime also shows up strongly in the Cox "
+        "hazards and KM curves, so compensation review and schedule relief "
+        "are the two highest-leverage retention levers.\n\n"
+        "2. **The first two years are the danger zone.** Both the KM curves "
+        "and at-risk tables show the steepest drop in retention in years "
+        "1–2, so onboarding and early-career investment has the highest "
+        "marginal value.\n\n"
+        "3. **Satisfaction is a strong protective factor.** Employees with a "
+        "composite satisfaction score above the midpoint show materially "
+        "higher retention than those below — and *LowSatisfactionFlag* sits "
+        "in the LASSO classifier's top ten drivers.\n\n"
+        "4. **The fair model loses almost no accuracy.** Removing gender and "
+        "age as Cox inputs barely moves the C-index — we recommend deploying "
+        "the fair model as the default."
     )
 
 
@@ -94,6 +106,65 @@ def _render_kpis(df: pd.DataFrame, risk: pd.DataFrame) -> None:
         "High-risk employees",
         f"{high_risk}",
         f"{high_risk / total * 100:.1f}% of workforce",
+    )
+
+
+def _render_risk_tier_legend(risk: pd.DataFrame) -> None:
+    """Show how risk tiers are assigned alongside the live per-tier headcount.
+
+    Pairs the abstract probability cut-offs with concrete data — the count
+    of employees in each band and the actual attrition rate observed within
+    that band — so HR can sanity-check that the bands track real outcomes.
+    The threshold strings come from ``tier_threshold_rows`` so this table
+    stays in sync with the notebook's cut-offs.
+    """
+    st.subheader("How risk tiers are assigned")
+    st.caption(
+        "Tiers come from the **fair Cox model**'s predicted 1-year attrition "
+        "probability — the survival model fitted *without* gender or age. "
+        "The Cox model decides who lands in which band; the LASSO classifier "
+        "supplies the SHAP-based driver attribution shown below."
+    )
+
+    # Aggregate per tier. Using a fixed reindex keeps the table in High → Low
+    # order regardless of the alphabetical sort the groupby would default to.
+    summary = (
+        risk.groupby("RiskTier")
+        .agg(
+            count=("RiskTier", "size"),
+            actual=("Attrition", "mean"),
+            avg_pred=("AttritionProb1Yr", "mean"),
+        )
+        .reindex(["High Risk", "Moderate Risk", "Low Risk"])
+    )
+
+    threshold_lookup = dict(tier_threshold_rows())
+    total = int(summary["count"].sum())
+
+    table = pd.DataFrame(
+        {
+            "Tier": summary.index,
+            "Threshold (1-yr predicted prob.)": [
+                threshold_lookup[t] for t in summary.index
+            ],
+            "Employees": summary["count"].astype(int).map("{:,}".format),
+            "Share of workforce": (summary["count"] / total * 100).map(
+                "{:.1f}%".format
+            ),
+            "Actual attrition rate": (summary["actual"] * 100).map(
+                "{:.1f}%".format
+            ),
+            "Avg predicted prob.": (summary["avg_pred"] * 100).map(
+                "{:.1f}%".format
+            ),
+        }
+    )
+    # ``hide_index=True`` keeps the table reading as a definition lookup
+    # rather than a queryable dataframe.
+    st.dataframe(table, hide_index=True, use_container_width=True)
+    st.caption(
+        "A well-calibrated set of tiers should show actual attrition rising "
+        "monotonically from Low → Moderate → High Risk."
     )
 
 
@@ -179,19 +250,25 @@ def _render_global_feature_importance(frames: dict, models: dict) -> None:
 
 
 def _render_classifier_metrics(frames: dict, models: dict) -> None:
-    """Headline metrics for the class-weighted XGBoost classifier."""
-    st.subheader("Classifier performance — XGBoost (class-weighted)")
+    """Headline metrics for the class-weighted LASSO classifier."""
+    st.subheader("Classifier performance — LASSO Logistic Regression (class-weighted)")
     st.caption(
         "These numbers describe how well the classifier separates leavers from "
         "stayers on an unseen 20% test split. **Recall** is the most operational "
         "metric — of everyone who actually leaves, what fraction did we catch?"
     )
 
-    xgb = models["xgb"]
+    lasso = models["lasso"]
+    scaler = models["scaler"]
     X_test, y_test = frames["X_test"], frames["y_test"]
 
-    y_pred = xgb.predict(X_test)
-    y_prob = xgb.predict_proba(X_test)[:, 1]
+    # LASSO was fit on standardised features, so the held-out split has to be
+    # transformed with the *training-time* scaler before scoring. Using a
+    # freshly-fit scaler here would re-leak test statistics into the model.
+    X_test_scaled = scaler.transform(X_test)
+
+    y_pred = lasso.predict(X_test_scaled)
+    y_prob = lasso.predict_proba(X_test_scaled)[:, 1]
 
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Accuracy", f"{accuracy_score(y_test, y_pred):.3f}")

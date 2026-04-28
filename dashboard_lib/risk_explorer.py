@@ -4,7 +4,7 @@ Lets a user drill into an individual employee:
   - Select from the filtered cohort (filters live in the tab's own sidebar block).
   - See predicted risk tier, one-year probability, outcome, and key attributes.
   - Inspect the Cox model's individual survival curve.
-  - Inspect the XGBoost classifier's per-employee SHAP decomposition.
+  - Inspect the LASSO classifier's per-employee SHAP decomposition.
   - Read rule-based retention recommendations, ranked by SHAP impact.
 
 All four visuals share a single selected employee, so managers get a consistent
@@ -19,7 +19,7 @@ import streamlit as st
 from .artifacts import build_shap_explainer
 from .config import PALETTE
 from .recommendations import build_recommendations
-from .ui import decode_onehot, tier_badge
+from .ui import decode_onehot, tier_badge, tier_thresholds_markdown
 
 
 def render_risk_explorer(frames: dict, models: dict) -> None:
@@ -31,10 +31,20 @@ def render_risk_explorer(frames: dict, models: dict) -> None:
     cph_fair = models["cph_fair"]
 
     st.markdown(
-        "Pick any employee to see the model's forecast, the features driving "
-        "that forecast, and suggested retention actions targeted at their "
-        "specific risk drivers. Filters in the sidebar narrow the selector."
+        "Pick any employee to see their predicted attrition risk, the "
+        "features driving that risk, and suggested retention actions. The "
+        "**risk tier** and **1-year attrition probability** come from the "
+        "fair Cox survival model; the **SHAP driver chart** is generated "
+        "from the LASSO classifier. Filters in the sidebar narrow the "
+        "selector."
     )
+
+    # Tier thresholds are repeated here (and not just on the Overview tab)
+    # because managers tend to land directly on the Risk Explorer when they
+    # have a specific employee in mind, and need to know what "High Risk"
+    # actually means without flipping tabs.
+    with st.expander("How risk tiers are assigned"):
+        st.markdown(tier_thresholds_markdown())
 
     # Sidebar filters scoped to this tab. Streamlit keeps them visible whenever
     # this tab is active and hides them when the user switches away.
@@ -197,22 +207,59 @@ def _render_employee_header(emp_row: pd.Series, emp_risk: pd.Series) -> None:
     header[2].metric(
         "Actual outcome", "Left" if emp_risk["Attrition"] else "Still employed"
     )
-    header[3].metric("Tenure (yrs)", f"{emp_row['SurvivalTime']:.0f}")
+    # Tenure here is ``YearsAtCompany`` (renamed ``SurvivalTime`` for the
+    # survival-analysis pipeline). The dataset stores it as a whole number of
+    # years, so a fresh hire reads as ``0`` — which looks like a missing-data
+    # bug at first glance. Tag it with "new hire" so the reader understands
+    # the model is flagging a brand-new employee, not a malformed row.
+    tenure_yrs = float(emp_row["SurvivalTime"])
+    if tenure_yrs < 1:
+        tenure_value = "<1"
+        tenure_delta = "new hire"
+    else:
+        tenure_value = f"{tenure_yrs:.0f}"
+        tenure_delta = None
+
+    header[3].metric(
+        "Tenure (yrs)",
+        tenure_value,
+        delta=tenure_delta,
+        delta_color="off",
+        help=(
+            "Years at the company. The dataset rounds to whole years, so a "
+            "tenure of <1 means an employee in their first year — these "
+            "tend to dominate the High Risk tier (see headline finding #2)."
+        ),
+    )
 
     st.markdown(
         f"**Department:** {decode_onehot(emp_row, 'Department')}  •  "
         f"**Role:** {decode_onehot(emp_row, 'JobRole')}  •  "
         f"**Job level:** {int(emp_row['JobLevel'])}  •  "
         f"**Overtime:** {'Yes' if emp_row['OverTime'] else 'No'}  •  "
-        f"**Monthly income:** ${emp_row['MonthlyIncome']:,.0f}"
+        f"**Monthly income:** \\${emp_row['MonthlyIncome']:,.0f}"
     )
 
 
 def _compute_shap(models: dict, X_full: pd.DataFrame, emp_id: int) -> pd.Series:
-    """Compute SHAP values for a single employee and return as an indexed Series."""
-    explainer = build_shap_explainer(models["xgb"])
-    # ``shap_values`` returns shape (1, n_features) for a single row; take row 0.
-    shap_values = explainer.shap_values(X_full.iloc[[emp_id]])[0]
+    """Compute SHAP values for a single employee and return as an indexed Series.
+
+    LASSO is a linear model, so we use ``shap.LinearExplainer`` (cheap, exact
+    contributions). The feature matrix has to be standardised first because
+    that's the space the model was fitted in. Scaling is column-wise, so the
+    feature ordering in the returned Series still matches ``X_full.columns``.
+    """
+    scaler = models["scaler"]
+    # Standardise the full frame once and use it as the SHAP background
+    # distribution. The cached explainer means this only happens once per
+    # session even though we rebuild ``X_full_scaled`` per call.
+    X_full_scaled = scaler.transform(X_full)
+    explainer = build_shap_explainer(models["lasso"], X_full_scaled)
+
+    # Scale just the selected row and pull its SHAP values. ``shap_values``
+    # returns shape (1, n_features) for a single row; take row 0.
+    row_scaled = scaler.transform(X_full.iloc[[emp_id]])
+    shap_values = explainer.shap_values(row_scaled)[0]
     return pd.Series(shap_values, index=X_full.columns)
 
 
@@ -252,7 +299,7 @@ def _render_survival_curve(cph_fair, cox_fair, emp_id, emp_row) -> None:
 
 def _render_shap_panel(shap_series: pd.Series) -> None:
     """Top-12 SHAP bar chart for the selected employee."""
-    st.subheader("Top drivers (SHAP, XGBoost)")
+    st.subheader("Top drivers (SHAP, LASSO)")
 
     # Sort by absolute impact, keep the top 12, then re-sort by signed value so
     # the bar chart reads cleanly from negative (bottom) to positive (top).
