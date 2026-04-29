@@ -2,26 +2,36 @@
 
 Estimates the net financial impact of a targeted retention programme.
 
+Two cost inputs that are easy to confuse:
+  • **Intervention cost per employee** ($) — what HR *spends* on each person
+    in the cohort (coaching, training, comp adjustments, etc.). This is a
+    flat dollar amount.
+  • **Turnover cost per leaver** (× annual salary) — what the company *loses*
+    when an employee walks out (recruitment, onboarding, productivity ramp).
+    This is a multiplier of the leaver's annual salary, not a flat dollar.
+
 Model
 -----
   Let p_i    = predicted 1-year attrition probability for employee i.
       s_i    = annual salary for employee i (MonthlyIncome × 12).
-      r      = replacement-cost multiplier (typically 0.5–2.0× annual salary).
+      r      = turnover-cost multiplier (typically 0.5–2.0× annual salary).
       e      = intervention effectiveness (fractional reduction in p_i).
-      c      = cost per intervention per employee.
+      c      = intervention cost per employee.
 
   baseline_cost     = Σ p_i · s_i · r                        # cost if we do nothing
   post_cost         = Σ p_i · (1 − e) · s_i · r              # cost after intervention
   intervention_cost = n_cohort · c                           # programme budget
   gross_savings     = baseline_cost − post_cost              # turnover averted
+                    = e · baseline_cost
   net_savings       = gross_savings − intervention_cost      # after spend
   roi_pct           = net_savings / intervention_cost × 100  # return per dollar
+  break_even_cpp    = gross_savings / n_cohort               # max c with ROI ≥ 0
 
 Defaults
 --------
   Effectiveness 30% — conservative based on published retention-programme
   meta-analyses (actual numbers vary widely by intervention type).
-  Replacement cost 1.0× annual salary — middle of the 50–200% range commonly
+  Turnover cost 1.0× annual salary — middle of the 50–200% range commonly
   cited in HR research.
 
 The numbers are sensitive to the assumption sliders: the purpose of this tab
@@ -33,6 +43,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
+from .config import HIGH_RISK_THRESHOLD, MODERATE_RISK_THRESHOLD
+
 
 def render_roi_calculator(frames: dict) -> None:
     """Render the ROI Calculator tab."""
@@ -43,8 +55,9 @@ def render_roi_calculator(frames: dict) -> None:
         "Estimate the financial return on a targeted retention programme. "
         "Pick which risk tiers to intervene on, set your assumptions about "
         "programme effectiveness and cost, and the calculator projects the "
-        "cost of doing nothing vs. the cost of intervening. All figures are "
-        "in annualised USD."
+        "cost of doing nothing vs. the cost of intervening. Risk tiers are "
+        "the fair Cox model's 1-year attrition bands (see Overview tab for "
+        "the cut-offs). All figures are in annualised USD."
     )
 
     # ---- Formula reference ---------------------------------------------
@@ -91,6 +104,15 @@ def render_roi_calculator(frames: dict) -> None:
     # Guard against divide-by-zero when the user zeros out the budget.
     roi_pct = (net_savings / intervention_cost * 100) if intervention_cost > 0 else 0.0
 
+    # Highest cost-per-employee that still produces non-negative ROI given
+    # the current cohort, effectiveness, and turnover-cost assumptions:
+    #   net_savings ≥ 0 ⇔ gross_savings ≥ n · c ⇔ c ≤ gross_savings / n
+    # This is the headline number a planner needs to know "is my budget
+    # realistic?" — surfaced as a KPI tile and a coloured callout below.
+    break_even_cpp = (
+        gross_savings / len(cohort_full) if len(cohort_full) > 0 else 0.0
+    )
+
     expected_leavers_base = float(cohort_full["AttritionProb1Yr"].sum())
     expected_leavers_post = float(
         (cohort_full["AttritionProb1Yr"] * (1 - effectiveness)).sum()
@@ -103,6 +125,17 @@ def render_roi_calculator(frames: dict) -> None:
         expected_leavers_post=expected_leavers_post,
         net_savings=net_savings,
         roi_pct=roi_pct,
+        break_even_cpp=break_even_cpp,
+        cost_per_emp=cost_per_emp,
+    )
+
+    # Plain-English summary of the relationship between current spend and
+    # break-even. Renders just below the KPI tiles so the callout's colour
+    # (success/warning) reinforces the same signal as the ROI metric above.
+    _render_break_even_callout(
+        cost_per_emp=cost_per_emp,
+        break_even_cpp=break_even_cpp,
+        effectiveness=effectiveness,
     )
 
     st.divider()
@@ -125,9 +158,9 @@ def render_roi_calculator(frames: dict) -> None:
         f"**Assumptions in this scenario:** "
         f"cohort of {len(cohort_full)} employees · "
         f"intervention effectiveness {effectiveness * 100:.0f}% · "
-        f"cost per employee ${cost_per_emp:,.0f} · "
-        f"replacement cost {replacement_mult:.1f}× annual salary. "
-        "Published HR research places replacement cost between 0.5× and 2.0× "
+        f"intervention cost \\${cost_per_emp:,.0f} per employee · "
+        f"turnover cost {replacement_mult:.1f}× annual salary per leaver. "
+        "Published HR research places turnover cost between 0.5× and 2.0× "
         "annual salary, varying by role seniority. Treat outputs as scenario "
         "planning, not forecast."
     )
@@ -148,9 +181,11 @@ def _render_formula_reference() -> None:
     with st.expander("How is ROI calculated? (formula)"):
         st.markdown(
             "For each employee $i$ in the selected cohort, with predicted "
-            "attrition probability $p_i$, annual salary $s_i$, replacement "
-            "multiplier $r$, intervention effectiveness $e$, per-employee "
-            "cost $c$, and cohort size $n$:"
+            "attrition probability $p_i$, annual salary $s_i$, "
+            "**turnover-cost multiplier** $r$ (× annual salary, charged when "
+            "an employee actually leaves), intervention effectiveness $e$, "
+            "**intervention cost per employee** $c$ (flat dollars per "
+            "person targeted), and cohort size $n$:"
         )
 
         # One LaTeX block per formula followed by a plain-English gloss.
@@ -160,7 +195,8 @@ def _render_formula_reference() -> None:
         st.markdown(
             "**Baseline cost** — expected turnover loss if we **do nothing**. "
             "Each employee's contribution is *(probability they leave) × "
-            "(their salary) × (replacement multiplier)*, summed across the cohort."
+            "(their salary) × (turnover-cost multiplier)*, summed across the "
+            "cohort."
         )
 
         st.latex(r"\text{post\_cost} = \sum_{i=1}^{n} p_i \cdot (1 - e) \cdot s_i \cdot r")
@@ -199,17 +235,29 @@ def _render_formula_reference() -> None:
         )
         st.markdown(
             "**ROI %** — return per dollar spent, expressed as a percentage. "
-            "An ROI of *+200%* means every $1 of programme spend returned $2 in "
-            "averted turnover cost on top of paying itself back. *0%* is the "
-            "break-even line."
+            "An ROI of *+200%* means every \\$1 of programme spend returned "
+            "\\$2 in averted turnover cost on top of paying itself back. *0%* "
+            "is the break-even line."
+        )
+
+        st.latex(
+            r"\text{break\_even\_cpp} = \frac{\text{gross\_savings}}{n} "
+            r"= \frac{e \cdot \sum p_i \cdot s_i \cdot r}{n}"
+        )
+        st.markdown(
+            "**Break-even cost per employee** — the highest value of $c$ at "
+            "which net savings stay non-negative. Above it, the programme "
+            "loses money no matter how it's marketed; below it, every dollar "
+            "of headroom flows straight to net savings."
         )
 
         st.markdown(
-            "Replacement cost $r$ scales each loss by an industry-typical "
-            "multiple of annual salary (0.5×–2.0×) to capture recruitment, "
-            "onboarding, and productivity ramp-up. Effectiveness $e$ is the "
-            "biggest judgement call — the *Sensitivity* chart below sweeps it "
-            "across 0–80% so you can see how much the conclusion depends on it."
+            "Turnover cost multiplier $r$ scales each leaver's loss by an "
+            "industry-typical multiple of annual salary (0.5×–2.0×) to "
+            "capture recruitment, onboarding, and productivity ramp-up. "
+            "Effectiveness $e$ is the biggest judgement call — the "
+            "*Sensitivity* chart below sweeps it across 0–80% so you can see "
+            "how much the conclusion depends on it."
         )
 
 
@@ -230,12 +278,23 @@ def _render_inputs(
     c1, c2 = st.columns(2)
 
     with c1:
+        # Format the tier cut-offs from config so the help string stays in
+        # sync with the notebook's actual band edges.
+        _high = int(round(HIGH_RISK_THRESHOLD * 100))
+        _mod = int(round(MODERATE_RISK_THRESHOLD * 100))
         tiers = st.multiselect(
             "Target risk tiers",
             options=["High Risk", "Moderate Risk", "Low Risk"],
             default=["High Risk", "Moderate Risk"],
-            help="Which employees receive the intervention. High Risk only is "
-            "the most focused option; adding Moderate Risk expands coverage.",
+            help=(
+                "Which employees receive the intervention. Tiers are the "
+                "fair Cox model's 1-year attrition bands: "
+                f"High Risk > {_high}%, "
+                f"Moderate Risk > {_mod}% up to {_high}%, "
+                f"Low Risk ≤ {_mod}%. "
+                "High Risk only is the most focused option; adding "
+                "Moderate Risk expands coverage."
+            ),
         )
         effectiveness = st.slider(
             "Intervention effectiveness",
@@ -250,25 +309,35 @@ def _render_inputs(
         )
 
     with c2:
+        # Two cost inputs deliberately phrased in parallel so the reader can
+        # tell them apart at a glance:
+        #   • "Intervention cost per employee"  — what we *spend* on each
+        #     person targeted (flat dollars).
+        #   • "Turnover cost per leaver"        — what we *lose* when someone
+        #     who would have left actually leaves (× their annual salary).
+        # Earlier copy used "Cost per employee" and "Replacement cost", which
+        # users sometimes interpreted as the same thing in different units.
         cost_per_emp = st.number_input(
-            "Cost per employee ($)",
+            "Intervention cost per employee ($)",
             min_value=0,
             max_value=25_000,
             value=2_000,
             step=250,
-            help="Budgeted cost per employee in the cohort. Includes any "
-            "combination of 1:1 coaching, training, equity, or compensation "
-            "adjustments.",
+            help="What HR *spends* per person in the cohort on the retention "
+            "programme — coaching, training, equity, or compensation "
+            "adjustments. Flat dollar amount applied to every targeted "
+            "employee, not just the ones who would have left.",
         )
         replacement_mult = st.slider(
-            "Replacement cost (× annual salary)",
+            "Turnover cost per leaver (× annual salary)",
             min_value=0.5,
             max_value=2.0,
             value=1.0,
             step=0.1,
-            help="Industry research estimates the cost of replacing an "
-            "employee at 50–200% of their annual salary, driven by "
-            "recruitment, onboarding, and productivity ramp-up.",
+            help="What the company *loses* when an employee walks out — "
+            "recruitment, onboarding, and productivity ramp-up — expressed "
+            "as a multiple of their annual salary. Industry research places "
+            "this at 50–200% of annual salary depending on role seniority.",
         )
 
     cohort = risk.loc[risk["RiskTier"].isin(tiers)].copy()
@@ -286,13 +355,19 @@ def _render_kpi_row(
     expected_leavers_post: float,
     net_savings: float,
     roi_pct: float,
+    break_even_cpp: float,
+    cost_per_emp: float,
 ) -> None:
-    """The main outputs: cohort size, avoided departures, net savings, ROI %."""
+    """The main outputs: cohort size, avoided departures, net savings, ROI %,
+    and the break-even cost-per-employee at the current assumptions."""
     st.subheader("Projected impact")
 
     avoided = expected_leavers_base - expected_leavers_post
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    # Six tiles fits comfortably on a wide layout and keeps the headline
+    # ROI metric in the centre, with break-even as the right-most tile so
+    # it reads like the answer to "how much could I have spent?".
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Cohort size", f"{cohort_size:,}")
     c2.metric(
         "Expected leavers — baseline",
@@ -313,6 +388,75 @@ def _render_kpi_row(
         "ROI",
         f"{roi_pct:+.0f}%",
         help="Net savings divided by intervention spend.",
+    )
+    # Delta = (current spend − break-even). Positive means the user is over-
+    # spending; negative means there's headroom. ``delta_color="inverse"``
+    # so that "above break-even" reads red and "below" reads green —
+    # opposite of the default, since for cost more = worse.
+    delta_dollar = cost_per_emp - break_even_cpp
+    c6.metric(
+        "Break-even cost / employee",
+        f"${break_even_cpp:,.0f}",
+        delta=f"{delta_dollar:+,.0f} vs. your spend",
+        delta_color="inverse",
+        help=(
+            "Highest intervention cost per employee that still produces "
+            "non-negative ROI at the current cohort size, effectiveness, "
+            "and turnover-cost multiplier. Spending below this line is "
+            "profitable; above it is a loss."
+        ),
+    )
+
+
+def _render_break_even_callout(
+    *,
+    cost_per_emp: float,
+    break_even_cpp: float,
+    effectiveness: float,
+) -> None:
+    """Coloured plain-English summary of where the user sits vs. break-even.
+
+    The KPI tile above shows the *number*; this banner explains the *story*
+    in one sentence and gives concrete next steps when the programme is
+    underwater. Three states:
+
+      • effectiveness == 0 — no programme can ever break even (degenerate).
+      • cost_per_emp ≤ break_even_cpp — green, programme makes money.
+      • cost_per_emp >  break_even_cpp — yellow warning, with a remedy list.
+    """
+    # Streamlit renders ``st.success`` / ``st.warning`` content as markdown,
+    # and markdown treats ``$...$`` as inline LaTeX. Bare dollar amounts in
+    # the same line therefore get pulled into a math span, italicising the
+    # text between them. Escape every literal dollar sign with a backslash
+    # so it renders as a $ rather than opening a math block.
+    if effectiveness <= 0 or break_even_cpp <= 0:
+        # With zero effectiveness, savings = 0 and any positive spend loses
+        # money — call this out explicitly rather than showing a $0 break-even
+        # which reads ambiguously.
+        st.warning(
+            "At **0% effectiveness**, the programme cannot break even at any "
+            "positive spend. Raise the *Intervention effectiveness* slider "
+            "above 0% to see meaningful break-even numbers."
+        )
+        return
+
+    if cost_per_emp <= break_even_cpp:
+        headroom = break_even_cpp - cost_per_emp
+        st.success(
+            f"At these assumptions, break-even cost per employee is "
+            f"approximately **\\${break_even_cpp:,.0f}**. Your spend of "
+            f"**\\${cost_per_emp:,.0f}** sits **\\${headroom:,.0f} below** "
+            f"that line, so the programme is in positive-ROI territory."
+        )
+        return
+
+    overspend = cost_per_emp - break_even_cpp
+    st.warning(
+        f"At these assumptions, break-even cost per employee is approximately "
+        f"**\\${break_even_cpp:,.0f}**. Your spend of **\\${cost_per_emp:,.0f}** "
+        f"is **\\${overspend:,.0f} above** that line, so the programme loses "
+        f"money. To turn it profitable, lower the per-employee spend, raise "
+        f"effectiveness, or narrow the cohort to higher-risk employees only."
     )
 
 

@@ -28,7 +28,7 @@ The Streamlit app (`dashboard.py`) reads pickled models and preprocessed data fr
 
    The app opens at <http://localhost:8501> with four tabs:
 
-   - **Overview** — headline attrition stats, department/role breakdowns, and XGBoost test metrics.
+   - **Overview** — headline attrition stats, department/role breakdowns, and LASSO Logistic Regression test metrics.
    - **Risk Explorer** — per-employee Cox survival forecast + SHAP explanation.
    - **Survival Curves** — Kaplan-Meier comparisons with log-rank significance.
    - **Fairness Audit** — parity, calibration, and C-index gaps across protected groups.

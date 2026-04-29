@@ -11,7 +11,55 @@ import pandas as pd
 import streamlit as st
 from lifelines import KaplanMeierFitter
 
-from .config import PALETTE, TIER_COLORS
+from .config import (
+    HIGH_RISK_THRESHOLD,
+    MODERATE_RISK_THRESHOLD,
+    PALETTE,
+    TIER_COLORS,
+)
+
+
+# Pre-format the percentage cut-offs once. The constants live in config so the
+# notebook (which writes the actual tier labels) and the dashboard text stay
+# in lockstep — change them in one place and every UI string refreshes.
+_HIGH_PCT = int(round(HIGH_RISK_THRESHOLD * 100))
+_MOD_PCT = int(round(MODERATE_RISK_THRESHOLD * 100))
+
+
+def tier_thresholds_markdown() -> str:
+    """Plain-English summary of how risk tiers are assigned.
+
+    Returned as a markdown string so each tab can render it inside whatever
+    container fits (info box, expander, caption). The wording is generated
+    from the ``HIGH_RISK_THRESHOLD`` / ``MODERATE_RISK_THRESHOLD`` constants,
+    so it never drifts from the cut-offs the notebook actually uses when it
+    writes ``risk_scores.parquet``.
+    """
+    return (
+        "Risk tiers come from the **fair Cox model**'s predicted 1-year "
+        "attrition probability — the survival model fitted *without* gender "
+        "or age as inputs. The LASSO classifier is a separate model used only "
+        "for the SHAP-based driver attribution and recommendations.\n\n"
+        f"- **High Risk** — predicted probability **above {_HIGH_PCT}%**\n"
+        f"- **Moderate Risk** — predicted probability "
+        f"**above {_MOD_PCT}% up to {_HIGH_PCT}%**\n"
+        f"- **Low Risk** — predicted probability **at or below {_MOD_PCT}%**"
+    )
+
+
+def tier_threshold_rows() -> list[tuple[str, str]]:
+    """Return ``(tier, threshold_text)`` pairs, in High → Low order.
+
+    Used by the Overview tab to build a side-by-side reference table that
+    pairs each tier with its actual headcount. Kept separate from
+    ``tier_thresholds_markdown`` because tables and prose need slightly
+    different phrasings of the same cut-off.
+    """
+    return [
+        ("High Risk", f"> {_HIGH_PCT}%"),
+        ("Moderate Risk", f"> {_MOD_PCT}% and ≤ {_HIGH_PCT}%"),
+        ("Low Risk", f"≤ {_MOD_PCT}%"),
+    ]
 
 
 def tier_badge(tier: str) -> str:
@@ -65,12 +113,15 @@ def km_plot(ax, df: pd.DataFrame, group_col: str, label_map: dict | None = None)
 
 # Glossary content kept as a module-level constant so the sidebar function
 # stays compact. Terms are phrased for an HR/business reader, not a statistician.
-_GLOSSARY = """
+# The threshold sentence is interpolated from the config constants so it never
+# drifts from the actual cut-offs the notebook applies to ``risk_scores.parquet``.
+_GLOSSARY = f"""
 **Attrition** — an employee leaves the company.
 
-**Flight risk / risk tier** — this model's estimate of how likely someone is
-to leave in the next year. *High Risk* means >35% predicted probability,
-*Moderate Risk* 15–35%, *Low Risk* <15%.
+**Flight risk / risk tier** — the fair Cox model's estimate of how likely
+someone is to leave in the next year. *High Risk* means **> {_HIGH_PCT}%**
+predicted probability, *Moderate Risk* **> {_MOD_PCT}% up to {_HIGH_PCT}%**,
+*Low Risk* **≤ {_MOD_PCT}%**.
 
 **Cox Proportional Hazards** — a survival model that estimates *when* each
 employee is likely to leave, not just whether.
@@ -122,6 +173,6 @@ def render_sidebar() -> None:
         with st.expander("Glossary — plain English"):
             st.markdown(_GLOSSARY)
         st.caption(
-            "Built with Streamlit · lifelines · XGBoost · SHAP. Re-run the "
-            "notebook's export cell and refresh to update the artifacts."
+            "Built with Streamlit · lifelines · scikit-learn · SHAP. Re-run "
+            "the notebook's export cell and refresh to update the artifacts."
         )
